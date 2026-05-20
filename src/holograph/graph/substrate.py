@@ -71,6 +71,10 @@ class Edge:
     relation: str
     weight: float
     source: str = ""
+    source_type: str = "inference"   # operator | document | inference | model
+    confidence: float = 0.5
+    quarantined: bool = False
+    revised_at: Optional[float] = None
 
 
 # ---------------------------------------------------------------------------
@@ -109,6 +113,10 @@ CREATE TABLE IF NOT EXISTS edges (
     source      TEXT    DEFAULT '',
     created_at  REAL    NOT NULL,
     last_used   REAL,
+    source_type TEXT    NOT NULL DEFAULT 'inference',
+    confidence  REAL    NOT NULL DEFAULT 0.5,
+    quarantined INTEGER NOT NULL DEFAULT 0,
+    revised_at  REAL,
     UNIQUE(head_id, tail_id, relation),
     FOREIGN KEY(head_id) REFERENCES entities(id),
     FOREIGN KEY(tail_id) REFERENCES entities(id)
@@ -172,6 +180,14 @@ class GraphSubstrate:
         edge_cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(edges)")}
         if "last_used" not in edge_cols:
             self.conn.execute("ALTER TABLE edges ADD COLUMN last_used REAL")
+        if "source_type" not in edge_cols:
+            self.conn.execute("ALTER TABLE edges ADD COLUMN source_type TEXT NOT NULL DEFAULT 'inference'")
+        if "confidence" not in edge_cols:
+            self.conn.execute("ALTER TABLE edges ADD COLUMN confidence REAL NOT NULL DEFAULT 0.5")
+        if "quarantined" not in edge_cols:
+            self.conn.execute("ALTER TABLE edges ADD COLUMN quarantined INTEGER NOT NULL DEFAULT 0")
+        if "revised_at" not in edge_cols:
+            self.conn.execute("ALTER TABLE edges ADD COLUMN revised_at REAL")
 
     # ---- entity / alias CRUD -----------------------------------------
 
@@ -299,6 +315,36 @@ class GraphSubstrate:
         self._bump()
         return eid
 
+    def set_belief_meta(self, edge_id: int, *, source_type: Optional[str] = None,
+                        confidence: Optional[float] = None,
+                        quarantined: Optional[bool] = None,
+                        revised_at: Optional[float] = None) -> None:
+        """Update belief metadata on an edge without disturbing the graph."""
+        sets, vals = [], []
+        if source_type is not None:
+            sets.append("source_type=?"); vals.append(source_type)
+        if confidence is not None:
+            sets.append("confidence=?"); vals.append(float(confidence))
+        if quarantined is not None:
+            sets.append("quarantined=?"); vals.append(1 if quarantined else 0)
+        if revised_at is not None:
+            sets.append("revised_at=?"); vals.append(float(revised_at))
+        if not sets:
+            return
+        vals.append(edge_id)
+        self.conn.execute(f"UPDATE edges SET {', '.join(sets)} WHERE id=?", vals)
+        self.conn.commit()
+        self._bump()
+
+    def beliefs_for(self, head_id: int, relation: str,
+                    include_quarantined: bool = True) -> List[Edge]:
+        """Return all edges (beliefs) for a given subject + relation."""
+        q = "SELECT * FROM edges WHERE head_id=? AND relation=?"
+        if not include_quarantined:
+            q += " AND quarantined=0"
+        rows = self.conn.execute(q, (head_id, relation)).fetchall()
+        return [self._row_to_edge(r) for r in rows]
+
     def update_edge_weight(self, edge_id: int, delta: float) -> float:
         cur = self.conn.execute("SELECT weight FROM edges WHERE id=?", (edge_id,))
         row = cur.fetchone()
@@ -322,6 +368,7 @@ class GraphSubstrate:
 
     @staticmethod
     def _row_to_edge(r: sqlite3.Row) -> Edge:
+        keys = r.keys()
         return Edge(
             id=int(r["id"]),
             head_id=int(r["head_id"]),
@@ -329,6 +376,10 @@ class GraphSubstrate:
             relation=r["relation"],
             weight=float(r["weight"]),
             source=r["source"] or "",
+            source_type=(r["source_type"] if "source_type" in keys and r["source_type"] else "inference"),
+            confidence=(float(r["confidence"]) if "confidence" in keys and r["confidence"] is not None else 0.5),
+            quarantined=(bool(r["quarantined"]) if "quarantined" in keys and r["quarantined"] is not None else False),
+            revised_at=(float(r["revised_at"]) if "revised_at" in keys and r["revised_at"] is not None else None),
         )
 
     def neighbors_of(self, eid: int, leaf_only: bool = True) -> List[int]:
@@ -503,6 +554,11 @@ class GraphSubstrate:
             leaf_ids.add(e.id)
             g.add_node(e.id, canonical=e.canonical, type=e.type, description=e.description)
         for edge in self.all_edges():
+            # Quarantined beliefs are isolated: they never enter the graph the
+            # reader propagates over, so unconfirmed/model-generated content
+            # cannot be retrieved as fact.
+            if edge.quarantined:
+                continue
             if edge.head_id in leaf_ids and edge.tail_id in leaf_ids:
                 g.add_edge(
                     edge.head_id, edge.tail_id,
