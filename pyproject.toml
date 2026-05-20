@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "holograph"
+version = "0.1.0"
+description = "Self-evolving hyperdimensional graph memory: PSP-HDC compositional algebra over a SAGE-style dynamic graph substrate."
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [
+    { name = "Grizz & Claude" },
+]
+license = { text = "MIT" }
+dependencies = [
+    "numpy>=1.24",
+    "torch>=2.6",
+    "spacy>=3.7",
+    "networkx>=3.0",
+    "typer>=0.9",
+    "rich>=13.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7", "pytest-cov"]
+rust = ["maturin>=1.4"]
+
+[project.scripts]
+holograph = "holograph.cli:app"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"holograph" = ["py.typed"]

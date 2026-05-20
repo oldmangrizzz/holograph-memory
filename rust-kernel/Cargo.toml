@@ -1,0 +1,23 @@
+[package]
+name = "holograph_hdc_rs"
+version = "0.1.0"
+edition = "2021"
+authors = ["Grizz & Claude"]
+description = "Rust accelerator for HoloGraph HDC kernels (PyO3 bindings)."
+license = "MIT"
+
+[lib]
+name = "holograph_hdc_rs"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+pyo3 = { version = "0.22", features = ["extension-module", "abi3-py310"] }
+numpy = "0.22"
+rayon = "1.10"
+rand = "0.8"
+rand_chacha = "0.3"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1

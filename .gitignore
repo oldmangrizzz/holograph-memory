@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+build/
+dist/
+.venv/
+.pytest_cache/
+
+# Memory stores, encrypted blobs, and keys — NEVER commit
+*.db
+*.db.enc
+*.sqlite
+*.sqlite3
+.work/
+key
+*.key
+
+# Rust
+target/
+
+# OS
+.DS_Store
+
+# sandbox / cache cruft
+pytest-cache-files-*/
+paper/
+*.egg-info/
