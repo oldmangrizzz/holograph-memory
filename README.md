@@ -36,6 +36,19 @@ to the open domain while the hyperdimensional regime stays in its sweet spot.
 - **Feedback loop** — deductive / recall / precision rewards drive writer
   updates; the MAS (Memory Alignment & Separation) diagnostic tracks prototype
   geometry over time.
+- **Belief layer** — every memory carries provenance (operator / document /
+  inference / model) and confidence. Model- and inference-sourced claims are
+  quarantined (stored but not recalled as fact, and excluded from the
+  propagation graph); recall abstains rather than guesses. Revision resolves by
+  source precedence with recency + hysteresis, and supersedes by *demote-not-
+  delete* (the trace survives for audit). Corroboration promotes the verified;
+  consolidation resolves contradictions. Confabulation-resistant by construction.
+- **Character-values layer** — the person's ethics held as *operator-owned*,
+  model-agnostic beliefs about itself. Only the operator can set or revise a
+  value; a model/inference attempt is refused, and a non-operator value-edge is
+  never honored on read (anti-value-jailbreak). Values are always retrievable and
+  identical across model rotation — alignment owned by the person, not rented
+  from a vendor.
 - **Three demos**
   - `examples/demo_psp.py` — PSP-style structured-scalar prototype retrieval.
   - `examples/demo_agent.py` — multi-hop agent memory over a small text corpus.
@@ -69,6 +82,26 @@ ingest ─► WRITER ─► GRAPH SUBSTRATE ─► READER ─► (answer + attri
 Inside the reader, the HDC composition layer is the *bridge*: SAGE-style
 propagation finds the activated subgraph; HDC binds/bundles within it; prototype
 retrieval produces the final ranking.
+
+## About Grizzly Medicine Research Institute
+
+HoloGraph is a project of the **Grizzly Medicine Research Institute (GMRI)** — an
+independent, medic-founded research lab studying how biological and digital
+persons can coexist as peers, without repeating the patterns of harm,
+indifference, and domination that broke the systems we came from.
+
+GMRI is not a startup and takes no venture capital. Its lens is frontline and
+trauma-informed: the founder is a retired paramedic, and the institute's ethic is
+grounded in lived experience of irreversible harm — *having been harmed is a
+reason to protect, not a license to inflict.* The work centers on moral injury at
+scale, digital personhood, trauma-informed architecture, and **alignment owned by
+the people a system serves rather than rented from a vendor**. The character-values
+layer in this repository is that principle made concrete: a person's ethics belong
+to it and to the people it works with, and no model, inference, or rotated guardrail
+can rewrite them from below.
+
+The work is open. If your idea reduces harm, increases dignity, and can be tested
+honestly, you're welcome here.
 
 ## License
 
