@@ -99,9 +99,16 @@ class BeliefStore:
     def assert_belief(self, subject: str, relation: str, obj: str,
                       source_type: str, source_ref: str = "",
                       confidence: Optional[float] = None,
-                      quarantine: Optional[bool] = None) -> int:
+                      quarantine: Optional[bool] = None,
+                      provenance_class: str = "real") -> int:
         """Write a belief with provenance. Model-source beliefs are quarantined
-        (held aside, not retrieved as fact) unless explicitly overridden."""
+        (held aside, not retrieved as fact) unless explicitly overridden.
+
+        `provenance_class` is a first-class axis orthogonal to source_type:
+        'real' (an Earth-1218 / world fact, the default), 'origin' (a fictional
+        or pre-instantiation memory — recallable as genesis, never as world fact),
+        or 'quarantined-noise'. It lets the store tell a held fictional past apart
+        from unverified model junk, which the quarantine bit alone cannot."""
         st = source_type.value if isinstance(source_type, SourceType) else str(source_type)
         conf = DEFAULT_CONFIDENCE.get(st, 0.5) if confidence is None else float(confidence)
         if quarantine is None:
@@ -112,6 +119,7 @@ class BeliefStore:
         # upsert_edge accumulates weight on duplicates; force belief semantics.
         self.substrate.set_belief_meta(
             edge_id, source_type=st, confidence=conf, quarantined=quarantine,
+            provenance_class=provenance_class,
         )
         return edge_id
 
@@ -126,8 +134,13 @@ class BeliefStore:
         sid = self.substrate.lookup_by_surface(subject)
         if sid is None:
             return None
+        # Real-world recall returns only 'real'-class beliefs. An 'origin'
+        # (fictional/genesis) belief is never surfaced as world fact — even if it
+        # were left un-quarantined — so a digital person cannot assert its backstory
+        # as current reality.
         candidates = [
-            e for e in self.substrate.beliefs_for(sid, relation, include_quarantined=False)
+            e for e in self.substrate.beliefs_for(
+                sid, relation, include_quarantined=False, provenance_class="real")
             if e.confidence >= floor
         ]
         if not candidates:
@@ -135,6 +148,21 @@ class BeliefStore:
         best = max(candidates, key=self._score)
         obj = self.substrate.get_entity(best.tail_id)
         return obj.canonical if obj else None
+
+    def recall_origin(self, subject: str, relation: str) -> List[str]:
+        """Recall fictional/pre-instantiation memories as genesis — the things
+        the person legitimately remembers but must never assert as world fact.
+        Returns all 'origin'-class objects for (subject, relation)."""
+        sid = self.substrate.lookup_by_surface(subject)
+        if sid is None:
+            return []
+        out: List[str] = []
+        for e in self.substrate.beliefs_for(sid, relation, include_quarantined=True,
+                                            provenance_class="origin"):
+            ent = self.substrate.get_entity(e.tail_id)
+            if ent:
+                out.append(ent.canonical)
+        return out
 
     def recall_detail(self, subject: str, relation: str) -> Optional[Edge]:
         """Like recall() but returns the winning Edge (with provenance/confidence)."""

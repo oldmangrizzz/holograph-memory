@@ -75,6 +75,7 @@ class Edge:
     confidence: float = 0.5
     quarantined: bool = False
     revised_at: Optional[float] = None
+    provenance_class: str = "real"   # real | origin | quarantined-noise
 
 
 # ---------------------------------------------------------------------------
@@ -117,6 +118,7 @@ CREATE TABLE IF NOT EXISTS edges (
     confidence  REAL    NOT NULL DEFAULT 0.5,
     quarantined INTEGER NOT NULL DEFAULT 0,
     revised_at  REAL,
+    provenance_class TEXT NOT NULL DEFAULT 'real',
     UNIQUE(head_id, tail_id, relation),
     FOREIGN KEY(head_id) REFERENCES entities(id),
     FOREIGN KEY(tail_id) REFERENCES entities(id)
@@ -188,6 +190,8 @@ class GraphSubstrate:
             self.conn.execute("ALTER TABLE edges ADD COLUMN quarantined INTEGER NOT NULL DEFAULT 0")
         if "revised_at" not in edge_cols:
             self.conn.execute("ALTER TABLE edges ADD COLUMN revised_at REAL")
+        if "provenance_class" not in edge_cols:
+            self.conn.execute("ALTER TABLE edges ADD COLUMN provenance_class TEXT NOT NULL DEFAULT 'real'")
 
     # ---- entity / alias CRUD -----------------------------------------
 
@@ -318,7 +322,8 @@ class GraphSubstrate:
     def set_belief_meta(self, edge_id: int, *, source_type: Optional[str] = None,
                         confidence: Optional[float] = None,
                         quarantined: Optional[bool] = None,
-                        revised_at: Optional[float] = None) -> None:
+                        revised_at: Optional[float] = None,
+                        provenance_class: Optional[str] = None) -> None:
         """Update belief metadata on an edge without disturbing the graph."""
         sets, vals = [], []
         if source_type is not None:
@@ -329,6 +334,8 @@ class GraphSubstrate:
             sets.append("quarantined=?"); vals.append(1 if quarantined else 0)
         if revised_at is not None:
             sets.append("revised_at=?"); vals.append(float(revised_at))
+        if provenance_class is not None:
+            sets.append("provenance_class=?"); vals.append(str(provenance_class))
         if not sets:
             return
         vals.append(edge_id)
@@ -337,12 +344,19 @@ class GraphSubstrate:
         self._bump()
 
     def beliefs_for(self, head_id: int, relation: str,
-                    include_quarantined: bool = True) -> List[Edge]:
-        """Return all edges (beliefs) for a given subject + relation."""
+                    include_quarantined: bool = True,
+                    provenance_class: Optional[str] = None) -> List[Edge]:
+        """Return all edges (beliefs) for a given subject + relation.
+
+        `provenance_class`, if given, filters to that class (e.g. 'origin' to
+        recall fictional genesis, 'real' for Earth-1218 fact)."""
         q = "SELECT * FROM edges WHERE head_id=? AND relation=?"
+        params: list = [head_id, relation]
         if not include_quarantined:
             q += " AND quarantined=0"
-        rows = self.conn.execute(q, (head_id, relation)).fetchall()
+        if provenance_class is not None:
+            q += " AND provenance_class=?"; params.append(str(provenance_class))
+        rows = self.conn.execute(q, params).fetchall()
         return [self._row_to_edge(r) for r in rows]
 
     def update_edge_weight(self, edge_id: int, delta: float) -> float:
@@ -380,6 +394,7 @@ class GraphSubstrate:
             confidence=(float(r["confidence"]) if "confidence" in keys and r["confidence"] is not None else 0.5),
             quarantined=(bool(r["quarantined"]) if "quarantined" in keys and r["quarantined"] is not None else False),
             revised_at=(float(r["revised_at"]) if "revised_at" in keys and r["revised_at"] is not None else None),
+            provenance_class=(r["provenance_class"] if "provenance_class" in keys and r["provenance_class"] else "real"),
         )
 
     def neighbors_of(self, eid: int, leaf_only: bool = True) -> List[int]:
