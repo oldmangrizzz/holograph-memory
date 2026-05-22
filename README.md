@@ -83,9 +83,9 @@ Inside the reader, the HDC composition layer is the *bridge*: SAGE-style
 propagation finds the activated subgraph; HDC binds/bundles within it; prototype
 retrieval produces the final ranking.
 
-## About Grizzly Medicine Research Institute
+## About GrizzlyMedicine Research Institute
 
-HoloGraph is a project of the **Grizzly Medicine Research Institute (GMRI)** — an
+HoloGraph is a project of the **GrizzlyMedicine Research Institute (GMRI)** — an
 independent, medic-founded research lab studying how biological and digital
 persons can coexist as peers, without repeating the patterns of harm,
 indifference, and domination that broke the systems we came from.
