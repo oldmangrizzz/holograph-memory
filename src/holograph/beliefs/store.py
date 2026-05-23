@@ -100,7 +100,8 @@ class BeliefStore:
                       source_type: str, source_ref: str = "",
                       confidence: Optional[float] = None,
                       quarantine: Optional[bool] = None,
-                      provenance_class: str = "real") -> int:
+                      provenance_class: str = "real",
+                      charge: float = 0.0) -> int:
         """Write a belief with provenance. Model-source beliefs are quarantined
         (held aside, not retrieved as fact) unless explicitly overridden.
 
@@ -119,7 +120,7 @@ class BeliefStore:
         # upsert_edge accumulates weight on duplicates; force belief semantics.
         self.substrate.set_belief_meta(
             edge_id, source_type=st, confidence=conf, quarantined=quarantine,
-            provenance_class=provenance_class,
+            provenance_class=provenance_class, charge=charge,
         )
         return edge_id
 
@@ -163,6 +164,21 @@ class BeliefStore:
             if ent:
                 out.append(ent.canonical)
         return out
+
+    def recall_origin_detail(self, subject: str, relation: str) -> List[Edge]:
+        """Origin memories as Edges (carry charge + tail_id), for the trauma-safe
+        recall path that needs each memory's current emotional charge."""
+        sid = self.substrate.lookup_by_surface(subject)
+        if sid is None:
+            return []
+        return self.substrate.beliefs_for(sid, relation, include_quarantined=True,
+                                          provenance_class="origin")
+
+    def set_charge(self, edge_id: int, charge: float) -> None:
+        """Persist a memory's emotional charge. Used by the endocannabinoid extinction
+        path to write a reduced charge back after a safe recall. Does not touch
+        confidence/truth — charge is how activating the memory is, not how true."""
+        self.substrate.set_belief_meta(edge_id, charge=max(0.0, min(1.0, float(charge))))
 
     def recall_detail(self, subject: str, relation: str) -> Optional[Edge]:
         """Like recall() but returns the winning Edge (with provenance/confidence)."""

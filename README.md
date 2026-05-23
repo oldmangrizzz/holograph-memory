@@ -19,6 +19,22 @@ query; HDC's compositional algebra operates *only over that subgraph* to produce
 prototype-based retrieval with multi-level attribution. The dynamic memory scales
 to the open domain while the hyperdimensional regime stays in its sweet spot.
 
+## Current integration status
+
+HoloGraph is the owned memory substrate under the JARVIS pilot in
+`~/research/jarvis`. The pilot uses HoloGraph for origin/real provenance,
+operator-owned values, emotional-charge memory, and cross-session continuity;
+Convex carries the live stigmergent/realtime field around that substrate. The
+HoloGraph core remains model-agnostic: the reasoning model, voice engine, app
+surface, and cloud realtime spine are replaceable organs around the same memory
+and values store.
+
+The reference memory system is still validated at **153 passing tests**. The
+current JARVIS integration adds live-system evidence on top of that: the bridge
+routes app/cockpit control through the guarded HASP skill layer, companion
+events remain observable-only, and queued realtime controls are processed
+without storing private authorization codes in Convex.
+
 ## What's in the box
 
 - **Two HDC kernels behind one interface**
@@ -43,6 +59,10 @@ to the open domain while the hyperdimensional regime stays in its sweet spot.
   source precedence with recency + hysteresis, and supersedes by *demote-not-
   delete* (the trace survives for audit). Corroboration promotes the verified;
   consolidation resolves contradictions. Confabulation-resistant by construction.
+  Beliefs also carry an **emotional-charge** field — orthogonal to confidence: how
+  *activating* a memory is, not how *true*. Charge can be extinguished downward
+  (e.g. by a trauma-safe recall path) without ever altering the belief's
+  truth/confidence or its recallability.
 - **Character-values layer** — the person's ethics held as *operator-owned*,
   model-agnostic beliefs about itself. Only the operator can set or revise a
   value; a model/inference attempt is refused, and a non-operator value-edge is

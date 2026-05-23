@@ -11,8 +11,15 @@ Public surface:
 """
 
 from .kernel import HDCKernel, RealKernel, TernaryKernel, make_kernel
-from .encoder import ScalarEncoder
 from .memory import PrototypeMemory, mas
+
+
+def __getattr__(name):
+    if name == "ScalarEncoder":
+        from .encoder import ScalarEncoder
+
+        return ScalarEncoder
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 __all__ = [
     "HDCKernel",

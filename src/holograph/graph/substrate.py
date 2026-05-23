@@ -76,6 +76,9 @@ class Edge:
     quarantined: bool = False
     revised_at: Optional[float] = None
     provenance_class: str = "real"   # real | origin | quarantined-noise
+    charge: float = 0.0              # emotional charge [0,1]; orthogonal to confidence.
+                                     # How activating a memory is, NOT how true it is.
+                                     # Extinguished downward by safe recall; never alters truth.
 
 
 # ---------------------------------------------------------------------------
@@ -119,6 +122,7 @@ CREATE TABLE IF NOT EXISTS edges (
     quarantined INTEGER NOT NULL DEFAULT 0,
     revised_at  REAL,
     provenance_class TEXT NOT NULL DEFAULT 'real',
+    charge      REAL    NOT NULL DEFAULT 0.0,
     UNIQUE(head_id, tail_id, relation),
     FOREIGN KEY(head_id) REFERENCES entities(id),
     FOREIGN KEY(tail_id) REFERENCES entities(id)
@@ -161,7 +165,9 @@ class GraphSubstrate:
         self.db_path = str(db_path)
         if self.db_path != ":memory:":
             Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
-        self.conn = sqlite3.connect(self.db_path)
+        # check_same_thread=False lets a server (e.g. the JARVIS bridge) touch the graph from
+        # request worker threads; callers must serialize writes (the bridge holds a lock).
+        self.conn = sqlite3.connect(self.db_path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self.conn.executescript(_SCHEMA)
         self._migrate()
@@ -192,6 +198,8 @@ class GraphSubstrate:
             self.conn.execute("ALTER TABLE edges ADD COLUMN revised_at REAL")
         if "provenance_class" not in edge_cols:
             self.conn.execute("ALTER TABLE edges ADD COLUMN provenance_class TEXT NOT NULL DEFAULT 'real'")
+        if "charge" not in edge_cols:
+            self.conn.execute("ALTER TABLE edges ADD COLUMN charge REAL NOT NULL DEFAULT 0.0")
 
     # ---- entity / alias CRUD -----------------------------------------
 
@@ -323,7 +331,8 @@ class GraphSubstrate:
                         confidence: Optional[float] = None,
                         quarantined: Optional[bool] = None,
                         revised_at: Optional[float] = None,
-                        provenance_class: Optional[str] = None) -> None:
+                        provenance_class: Optional[str] = None,
+                        charge: Optional[float] = None) -> None:
         """Update belief metadata on an edge without disturbing the graph."""
         sets, vals = [], []
         if source_type is not None:
@@ -336,6 +345,8 @@ class GraphSubstrate:
             sets.append("revised_at=?"); vals.append(float(revised_at))
         if provenance_class is not None:
             sets.append("provenance_class=?"); vals.append(str(provenance_class))
+        if charge is not None:
+            sets.append("charge=?"); vals.append(max(0.0, min(1.0, float(charge))))
         if not sets:
             return
         vals.append(edge_id)
@@ -395,6 +406,7 @@ class GraphSubstrate:
             quarantined=(bool(r["quarantined"]) if "quarantined" in keys and r["quarantined"] is not None else False),
             revised_at=(float(r["revised_at"]) if "revised_at" in keys and r["revised_at"] is not None else None),
             provenance_class=(r["provenance_class"] if "provenance_class" in keys and r["provenance_class"] else "real"),
+            charge=(float(r["charge"]) if "charge" in keys and r["charge"] is not None else 0.0),
         )
 
     def neighbors_of(self, eid: int, leaf_only: bool = True) -> List[int]:
