@@ -1,0 +1,8 @@
+# On macOS, extension modules (.dylib) don't link against libpython — Python
+# symbols are resolved at load time by the interpreter.  Tell the linker to
+# accept undefined symbols so `cargo build` works without maturin.
+[target.aarch64-apple-darwin]
+rustflags = ["-C", "link-arg=-undefined", "-C", "link-arg=dynamic_lookup"]
+
+[target.x86_64-apple-darwin]
+rustflags = ["-C", "link-arg=-undefined", "-C", "link-arg=dynamic_lookup"]

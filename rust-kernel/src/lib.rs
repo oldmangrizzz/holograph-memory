@@ -10,7 +10,13 @@
 //! Build: `cd rust-kernel && maturin develop --release`
 //! Then in Python: `from holograph._native import RealKernelRs, TernaryKernelRs`
 
+// PyO3 `?` on Result<T, PyErr> in functions returning PyResult<T> triggers
+// `From<PyErr> for PyErr` (identity), which clippy flags as useless_conversion.
+// This is a known false positive in PyO3 codebases — the `?` is load-bearing.
+#![allow(clippy::useless_conversion)]
+
 use numpy::{IntoPyArray, PyArray1, PyArray2, PyReadonlyArray1, PyReadonlyArray2};
+use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
 use rand::SeedableRng;
@@ -51,13 +57,13 @@ struct BitsliceTernary {
 
 impl BitsliceTernary {
     fn new(dim: usize) -> Self {
-        let words = (dim + 63) / 64;
+        let words = dim.div_ceil(64);
         BitsliceTernary { dim, pos: vec![0u64; words], neg: vec![0u64; words] }
     }
 
     fn from_int8(slice: &[i8]) -> Self {
         let dim = slice.len();
-        let words = (dim + 63) / 64;
+        let words = dim.div_ceil(64);
         let mut pos = vec![0u64; words];
         let mut neg = vec![0u64; words];
         for (i, &t) in slice.iter().enumerate() {
@@ -74,14 +80,14 @@ impl BitsliceTernary {
 
     fn to_int8(&self) -> Vec<i8> {
         let mut out = vec![0i8; self.dim];
-        for i in 0..self.dim {
+        for (i, elem) in out.iter_mut().enumerate() {
             let w = i / 64;
             let b = i % 64;
             let p = (self.pos[w] >> b) & 1;
             let n = (self.neg[w] >> b) & 1;
-            out[i] = if p == 1 && n == 0 { 1 }
-                     else if n == 1 && p == 0 { -1 }
-                     else { 0 };
+            *elem = if p == 1 && n == 0 { 1 }
+                    else if n == 1 && p == 0 { -1 }
+                    else { 0 };
         }
         out
     }
@@ -145,11 +151,15 @@ impl RealKernelRs {
     fn name(&self) -> &'static str { "real" }
 
     /// Generate a row-normalised Gaussian random basis matrix.
-    fn random_basis<'py>(&self, py: Python<'py>, n_rows: usize, seed: u64) -> Bound<'py, PyArray2<f32>> {
+    fn random_basis<'py>(&self, py: Python<'py>, n_rows: usize, seed: u64)
+        -> PyResult<Bound<'py, PyArray2<f32>>>
+    {
+        let capacity = n_rows.checked_mul(self.dim)
+            .ok_or_else(|| PyValueError::new_err("n_rows * dim overflows usize"))?;
         let mut rng = ChaCha8Rng::seed_from_u64(seed);
         let std_normal = rand_distr_standard_normal();
-        let mut data: Vec<f32> = Vec::with_capacity(n_rows * self.dim);
-        for _ in 0..(n_rows * self.dim) {
+        let mut data: Vec<f32> = Vec::with_capacity(capacity);
+        for _ in 0..capacity {
             data.push(std_normal.sample(&mut rng));
         }
         // Row-normalize.
@@ -167,29 +177,41 @@ impl RealKernelRs {
                 }
             }
         }
+        // data.len() == capacity == n_rows * self.dim; shape is consistent.
         let arr = ndarray_from_vec_2d(data, n_rows, self.dim);
-        arr.into_pyarray_bound(py)
+        Ok(arr.into_pyarray_bound(py))
     }
 
     fn bind<'py>(&self, py: Python<'py>,
                   a: PyReadonlyArray1<'_, f32>,
-                  b: PyReadonlyArray1<'_, f32>) -> Bound<'py, PyArray1<f32>> {
-        let av = a.as_slice().unwrap();
-        let bv = b.as_slice().unwrap();
-        let mut out: Vec<f32> = av.iter().zip(bv.iter()).map(|(x, y)| x * y).collect();
-        let _ = &mut out;
-        out.into_pyarray_bound(py)
+                  b: PyReadonlyArray1<'_, f32>) -> PyResult<Bound<'py, PyArray1<f32>>> {
+        let av = a.as_slice().map_err(|_| PyValueError::new_err("array a not contiguous"))?;
+        let bv = b.as_slice().map_err(|_| PyValueError::new_err("array b not contiguous"))?;
+        if av.len() != bv.len() {
+            return Err(PyValueError::new_err(
+                format!("length mismatch: a={}, b={}", av.len(), bv.len())
+            ));
+        }
+        let out: Vec<f32> = av.iter().zip(bv.iter()).map(|(x, y)| x * y).collect();
+        Ok(out.into_pyarray_bound(py))
     }
 
-    fn bundle<'py>(&self, py: Python<'py>, vs: Vec<PyReadonlyArray1<'_, f32>>) -> Bound<'py, PyArray1<f32>> {
+    fn bundle<'py>(&self, py: Python<'py>, vs: Vec<PyReadonlyArray1<'_, f32>>)
+        -> PyResult<Bound<'py, PyArray1<f32>>>
+    {
         if vs.is_empty() {
-            return vec![0.0f32; self.dim].into_pyarray_bound(py);
+            return Ok(vec![0.0f32; self.dim].into_pyarray_bound(py));
         }
         let mut acc = vec![0.0f32; self.dim];
         for v in &vs {
-            let s = v.as_slice().unwrap();
-            for (i, x) in s.iter().enumerate() {
-                acc[i] += x;
+            let s = v.as_slice().map_err(|_| PyValueError::new_err("array not contiguous"))?;
+            if s.len() != self.dim {
+                return Err(PyValueError::new_err(
+                    format!("vector length {} != kernel dim {}", s.len(), self.dim)
+                ));
+            }
+            for (a, x) in acc.iter_mut().zip(s.iter()) {
+                *a += x;
             }
         }
         let mut norm = 0.0f32;
@@ -198,32 +220,53 @@ impl RealKernelRs {
         if norm > 0.0 {
             for x in &mut acc { *x /= norm; }
         }
-        acc.into_pyarray_bound(py)
+        Ok(acc.into_pyarray_bound(py))
     }
 
-    fn similarity(&self, a: PyReadonlyArray1<'_, f32>, b: PyReadonlyArray1<'_, f32>) -> f32 {
-        let av = a.as_slice().unwrap();
-        let bv = b.as_slice().unwrap();
+    fn similarity(&self, a: PyReadonlyArray1<'_, f32>, b: PyReadonlyArray1<'_, f32>)
+        -> PyResult<f32>
+    {
+        let av = a.as_slice().map_err(|_| PyValueError::new_err("array a not contiguous"))?;
+        let bv = b.as_slice().map_err(|_| PyValueError::new_err("array b not contiguous"))?;
+        if av.len() != bv.len() {
+            return Err(PyValueError::new_err(
+                format!("length mismatch: a={}, b={}", av.len(), bv.len())
+            ));
+        }
         let mut dot = 0.0f32;
         let mut na = 0.0f32;
         let mut nb = 0.0f32;
-        for i in 0..av.len() {
-            dot += av[i] * bv[i];
-            na += av[i] * av[i];
-            nb += bv[i] * bv[i];
+        for (x, y) in av.iter().zip(bv.iter()) {
+            dot += x * y;
+            na += x * x;
+            nb += y * y;
         }
         let na = na.sqrt();
         let nb = nb.sqrt();
-        if na == 0.0 || nb == 0.0 { 0.0 } else { dot / (na * nb) }
+        Ok(if na == 0.0 || nb == 0.0 { 0.0 } else { dot / (na * nb) })
     }
 
     /// PSP-HDC encode: h = tanh((scaled * e) @ B)
     fn encode_scalar<'py>(&self, py: Python<'py>,
                            scaled: f32,
                            embedding: PyReadonlyArray1<'_, f32>,
-                           basis: PyReadonlyArray2<'_, f32>) -> Bound<'py, PyArray1<f32>> {
-        let e = embedding.as_slice().unwrap();
+                           basis: PyReadonlyArray2<'_, f32>)
+        -> PyResult<Bound<'py, PyArray1<f32>>>
+    {
+        let e = embedding.as_slice()
+            .map_err(|_| PyValueError::new_err("embedding not contiguous"))?;
         let b = basis.as_array();
+        let bshape = b.shape();
+        if bshape[0] != e.len() {
+            return Err(PyValueError::new_err(
+                format!("basis rows {} != embedding len {}", bshape[0], e.len())
+            ));
+        }
+        if bshape[1] != self.dim {
+            return Err(PyValueError::new_err(
+                format!("basis cols {} != kernel dim {}", bshape[1], self.dim)
+            ));
+        }
         let d = self.dim;
         let mut out = vec![0.0f32; d];
         for j in 0..d {
@@ -234,24 +277,29 @@ impl RealKernelRs {
             out[j] = acc;
         }
         tanh_inplace(&mut out);
-        out.into_pyarray_bound(py)
+        Ok(out.into_pyarray_bound(py))
     }
 
-    fn pack<'py>(&self, py: Python<'py>, hv: PyReadonlyArray1<'_, f32>) -> Py<PyBytes> {
-        let s = hv.as_slice().unwrap();
+    fn pack<'py>(&self, py: Python<'py>, hv: PyReadonlyArray1<'_, f32>) -> PyResult<Py<PyBytes>> {
+        let s = hv.as_slice().map_err(|_| PyValueError::new_err("array not contiguous"))?;
         let bytes: Vec<u8> = s.iter().flat_map(|x| x.to_le_bytes()).collect();
-        PyBytes::new_bound(py, &bytes).into()
+        Ok(PyBytes::new_bound(py, &bytes).into())
     }
 
-    fn unpack<'py>(&self, py: Python<'py>, blob: &[u8]) -> Bound<'py, PyArray1<f32>> {
-        let dim = self.dim;
-        let mut out = vec![0.0f32; dim];
-        for i in 0..dim {
-            let off = i * 4;
-            let arr: [u8; 4] = [blob[off], blob[off+1], blob[off+2], blob[off+3]];
-            out[i] = f32::from_le_bytes(arr);
+    fn unpack<'py>(&self, py: Python<'py>, blob: &[u8]) -> PyResult<Bound<'py, PyArray1<f32>>> {
+        let required = self.dim.checked_mul(4)
+            .ok_or_else(|| PyValueError::new_err("dim * 4 overflows usize"))?;
+        if blob.len() < required {
+            return Err(PyValueError::new_err(
+                format!("blob too short: need {} bytes, got {}", required, blob.len())
+            ));
         }
-        out.into_pyarray_bound(py)
+        let mut out = vec![0.0f32; self.dim];
+        // blob.len() >= self.dim * 4, so each off+3 is in bounds.
+        for (elem, chunk) in out.iter_mut().zip(blob.chunks_exact(4)) {
+            *elem = f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+        }
+        Ok(out.into_pyarray_bound(py))
     }
 }
 
@@ -276,11 +324,15 @@ impl TernaryKernelRs {
     #[getter]
     fn name(&self) -> &'static str { "ternary" }
 
-    fn random_basis<'py>(&self, py: Python<'py>, n_rows: usize, seed: u64) -> Bound<'py, PyArray2<f32>> {
+    fn random_basis<'py>(&self, py: Python<'py>, n_rows: usize, seed: u64)
+        -> PyResult<Bound<'py, PyArray2<f32>>>
+    {
+        let capacity = n_rows.checked_mul(self.dim)
+            .ok_or_else(|| PyValueError::new_err("n_rows * dim overflows usize"))?;
         let mut rng = ChaCha8Rng::seed_from_u64(seed);
         let sn = rand_distr_standard_normal();
-        let mut data: Vec<f32> = Vec::with_capacity(n_rows * self.dim);
-        for _ in 0..(n_rows * self.dim) {
+        let mut data: Vec<f32> = Vec::with_capacity(capacity);
+        for _ in 0..capacity {
             data.push(sn.sample(&mut rng));
         }
         for row in 0..n_rows {
@@ -293,16 +345,31 @@ impl TernaryKernelRs {
                 for x in &mut data[start..end] { *x /= norm; }
             }
         }
+        // data.len() == capacity == n_rows * self.dim; shape is consistent.
         let arr = ndarray_from_vec_2d(data, n_rows, self.dim);
-        arr.into_pyarray_bound(py)
+        Ok(arr.into_pyarray_bound(py))
     }
 
     fn encode_scalar<'py>(&self, py: Python<'py>,
                            scaled: f32,
                            embedding: PyReadonlyArray1<'_, f32>,
-                           basis: PyReadonlyArray2<'_, f32>) -> Bound<'py, PyArray1<i8>> {
-        let e = embedding.as_slice().unwrap();
+                           basis: PyReadonlyArray2<'_, f32>)
+        -> PyResult<Bound<'py, PyArray1<i8>>>
+    {
+        let e = embedding.as_slice()
+            .map_err(|_| PyValueError::new_err("embedding not contiguous"))?;
         let b = basis.as_array();
+        let bshape = b.shape();
+        if bshape[0] != e.len() {
+            return Err(PyValueError::new_err(
+                format!("basis rows {} != embedding len {}", bshape[0], e.len())
+            ));
+        }
+        if bshape[1] != self.dim {
+            return Err(PyValueError::new_err(
+                format!("basis cols {} != kernel dim {}", bshape[1], self.dim)
+            ));
+        }
         let d = self.dim;
         let mut out = vec![0i8; d];
         for j in 0..d {
@@ -314,77 +381,105 @@ impl TernaryKernelRs {
                 0
             } else if acc > 0.0 { 1 } else { -1 };
         }
-        out.into_pyarray_bound(py)
+        Ok(out.into_pyarray_bound(py))
     }
 
     fn bind<'py>(&self, py: Python<'py>,
                   a: PyReadonlyArray1<'_, i8>,
-                  b: PyReadonlyArray1<'_, i8>) -> Bound<'py, PyArray1<i8>> {
-        let av = a.as_slice().unwrap();
-        let bv = b.as_slice().unwrap();
+                  b: PyReadonlyArray1<'_, i8>) -> PyResult<Bound<'py, PyArray1<i8>>> {
+        let av = a.as_slice().map_err(|_| PyValueError::new_err("array a not contiguous"))?;
+        let bv = b.as_slice().map_err(|_| PyValueError::new_err("array b not contiguous"))?;
+        if av.len() != bv.len() {
+            return Err(PyValueError::new_err(
+                format!("length mismatch: a={}, b={}", av.len(), bv.len())
+            ));
+        }
         let bs_a = BitsliceTernary::from_int8(av);
         let bs_b = BitsliceTernary::from_int8(bv);
         let result = bs_a.bind(&bs_b);
-        result.to_int8().into_pyarray_bound(py)
+        Ok(result.to_int8().into_pyarray_bound(py))
     }
 
-    fn bundle<'py>(&self, py: Python<'py>, vs: Vec<PyReadonlyArray1<'_, i8>>) -> Bound<'py, PyArray1<i8>> {
+    fn bundle<'py>(&self, py: Python<'py>, vs: Vec<PyReadonlyArray1<'_, i8>>)
+        -> PyResult<Bound<'py, PyArray1<i8>>>
+    {
         if vs.is_empty() {
-            return vec![0i8; self.dim].into_pyarray_bound(py);
+            return Ok(vec![0i8; self.dim].into_pyarray_bound(py));
         }
         let n = vs.len() as f32;
         let mut acc = vec![0i32; self.dim];
         for v in &vs {
-            let s = v.as_slice().unwrap();
-            for (i, x) in s.iter().enumerate() {
-                acc[i] += *x as i32;
+            let s = v.as_slice().map_err(|_| PyValueError::new_err("array not contiguous"))?;
+            if s.len() != self.dim {
+                return Err(PyValueError::new_err(
+                    format!("vector length {} != kernel dim {}", s.len(), self.dim)
+                ));
+            }
+            for (a, x) in acc.iter_mut().zip(s.iter()) {
+                *a += *x as i32;
             }
         }
-        let threshold = 0.5_f32 * n.sqrt();
-        let threshold = if threshold > self.deadband { threshold } else { self.deadband };
+        let threshold = (0.5_f32 * n.sqrt()).max(self.deadband);
         let mut out = vec![0i8; self.dim];
-        for i in 0..self.dim {
-            let a = acc[i] as f32;
-            out[i] = if a.abs() <= threshold {
-                0
-            } else if a > 0.0 { 1 } else { -1 };
+        for (o, a) in out.iter_mut().zip(acc.iter()) {
+            let a = *a as f32;
+            *o = if a.abs() <= threshold { 0 } else if a > 0.0 { 1 } else { -1 };
         }
-        out.into_pyarray_bound(py)
+        Ok(out.into_pyarray_bound(py))
     }
 
-    fn similarity(&self, a: PyReadonlyArray1<'_, i8>, b: PyReadonlyArray1<'_, i8>) -> f64 {
-        let bs_a = BitsliceTernary::from_int8(a.as_slice().unwrap());
-        let bs_b = BitsliceTernary::from_int8(b.as_slice().unwrap());
-        bs_a.similarity(&bs_b)
+    fn similarity(&self, a: PyReadonlyArray1<'_, i8>, b: PyReadonlyArray1<'_, i8>)
+        -> PyResult<f64>
+    {
+        let av = a.as_slice().map_err(|_| PyValueError::new_err("array a not contiguous"))?;
+        let bv = b.as_slice().map_err(|_| PyValueError::new_err("array b not contiguous"))?;
+        if av.len() != bv.len() {
+            return Err(PyValueError::new_err(
+                format!("length mismatch: a={}, b={}", av.len(), bv.len())
+            ));
+        }
+        let bs_a = BitsliceTernary::from_int8(av);
+        let bs_b = BitsliceTernary::from_int8(bv);
+        Ok(bs_a.similarity(&bs_b))
     }
 
-    fn quantize<'py>(&self, py: Python<'py>, real_hv: PyReadonlyArray1<'_, f32>) -> Bound<'py, PyArray1<i8>> {
-        let s = real_hv.as_slice().unwrap();
+    fn quantize<'py>(&self, py: Python<'py>, real_hv: PyReadonlyArray1<'_, f32>)
+        -> PyResult<Bound<'py, PyArray1<i8>>>
+    {
+        let s = real_hv.as_slice()
+            .map_err(|_| PyValueError::new_err("array not contiguous"))?;
+        if s.len() != self.dim {
+            return Err(PyValueError::new_err(
+                format!("vector length {} != kernel dim {}", s.len(), self.dim)
+            ));
+        }
         let mut out = vec![0i8; self.dim];
-        for i in 0..self.dim {
-            let x = s[i];
-            out[i] = if x.abs() <= self.deadband {
-                0
-            } else if x > 0.0 { 1 } else { -1 };
+        for (o, &x) in out.iter_mut().zip(s.iter()) {
+            *o = if x.abs() <= self.deadband { 0 } else if x > 0.0 { 1 } else { -1 };
         }
-        out.into_pyarray_bound(py)
+        Ok(out.into_pyarray_bound(py))
     }
 
-    fn pack<'py>(&self, py: Python<'py>, hv: PyReadonlyArray1<'_, i8>) -> Py<PyBytes> {
-        let s = hv.as_slice().unwrap();
+    fn pack<'py>(&self, py: Python<'py>, hv: PyReadonlyArray1<'_, i8>) -> PyResult<Py<PyBytes>> {
+        let s = hv.as_slice().map_err(|_| PyValueError::new_err("array not contiguous"))?;
+        if s.len() != self.dim {
+            return Err(PyValueError::new_err(
+                format!("vector length {} != kernel dim {}", s.len(), self.dim)
+            ));
+        }
         let mut codes: Vec<u8> = vec![0u8; self.dim];
-        for i in 0..self.dim {
-            codes[i] = match s[i] {
-                1 => 1, -1 => 2, _ => 0,
-            };
+        for (code, &val) in codes.iter_mut().zip(s.iter()) {
+            *code = match val { 1 => 1, -1 => 2, _ => 0 };
         }
         let pad = (4 - (self.dim % 4)) % 4;
-        if pad > 0 { codes.extend(std::iter::repeat(0u8).take(pad)); }
+        if pad > 0 {
+            codes.resize(codes.len() + pad, 0u8);
+        }
         let mut out: Vec<u8> = Vec::with_capacity(codes.len() / 4);
-        for chunk in codes.chunks(4) {
+        for chunk in codes.chunks_exact(4) {
             out.push(chunk[0] | (chunk[1] << 2) | (chunk[2] << 4) | (chunk[3] << 6));
         }
-        PyBytes::new_bound(py, &out).into()
+        Ok(PyBytes::new_bound(py, &out).into())
     }
 
     fn unpack<'py>(&self, py: Python<'py>, blob: &[u8]) -> Bound<'py, PyArray1<i8>> {
@@ -400,7 +495,7 @@ impl TernaryKernelRs {
                 emitted += 1;
             }
         }
-        while out.len() < self.dim { out.push(0); }
+        out.resize(self.dim, 0i8);
         out.into_pyarray_bound(py)
     }
 }
@@ -410,6 +505,11 @@ impl TernaryKernelRs {
 // Helpers
 // -------------------------------------------------------------------------
 
+/// Internal helper: construct ndarray::Array2 from a flat Vec.
+///
+/// # Panics
+/// Panics if `data.len() != n_rows * n_cols`.  Call sites ensure the invariant
+/// by computing `capacity = n_rows.checked_mul(n_cols)?` before filling `data`.
 fn ndarray_from_vec_2d(data: Vec<f32>, n_rows: usize, n_cols: usize) -> ndarray::Array2<f32> {
     ndarray::Array2::from_shape_vec((n_rows, n_cols), data).expect("shape mismatch")
 }
@@ -455,3 +555,4 @@ fn holograph_hdc_rs(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("__doc__", "HoloGraph HDC kernels: Rust accelerator with bitsliced ternary binding.")?;
     Ok(())
 }
+
